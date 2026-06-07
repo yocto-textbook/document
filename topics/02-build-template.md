@@ -1,32 +1,43 @@
 # 02. build template과 default configuration
 
-[학습 순서로 돌아가기](../README.md#추천-학습-순서)
+[Back to Learning Path](../README.md#learning-path)
 
-관련 commit:
+Related Commit:
 
 - `8198bff meta-textbook: introduce template configuration for textbook build environment`
 
-## 필요한 상황
+## When to Use
 
 새 build directory를 만들 때 항상 같은 `local.conf`, `bblayers.conf`가 생성되게 하고 싶다면 Yocto의 `TEMPLATECONF`를 사용한다.
 
-## 추가하면 되는 것
+## What This Chapter Covers
 
-- `conf/templates/default/local.conf.sample`
-- `conf/templates/default/bblayers.conf.sample`
-- `conf/templates/default/conf-notes.txt`
-- `envsetup.sh`에서 `TEMPLATECONF` export
+이 chapter는 새 build directory가 생성될 때 어떤 default configuration이 들어가는지 설명한다. `TEMPLATECONF`를 통해 layer 목록, mirror, sstate, buildhistory 같은 build policy를 project 기준으로 고정한다.
 
-## 이 프로젝트의 구현
+## Required Additions
 
-파일:
+| 항목 | 역할 |
+| --- | --- |
+| `conf/templates/default/local.conf.sample` | 새 build directory의 기본 local configuration |
+| `conf/templates/default/bblayers.conf.sample` | 기본 enabled layer 목록 |
+| `conf/templates/default/conf-notes.txt` | `oe-init-build-env` 진입 후 보여줄 안내 |
+| `envsetup.sh`의 `TEMPLATECONF` | 사용할 template directory 지정 |
 
-- `meta-textbook-core/conf/templates/default/local.conf.sample`
-- `meta-textbook-core/conf/templates/default/bblayers.conf.sample`
-- `meta-textbook-core/conf/templates/default/conf-notes.txt`
-- `envsetup.sh`
+## Project Implementation
 
-핵심 configuration:
+```text
+.
+└── layers
+    └── meta-textbook
+        ├── envsetup.sh
+        └── meta-textbook-core
+            └── conf/templates/default
+                ├── local.conf.sample
+                ├── bblayers.conf.sample
+                └── conf-notes.txt
+```
+
+Key Configuration:
 
 ```sh
 export TEMPLATECONF=${WORKSPACE_BASE}/layers/meta-textbook/meta-textbook-core/conf/templates/default/
@@ -43,14 +54,14 @@ INHERIT += "buildhistory"
 BUILDHISTORY_COMMIT = "1"
 ```
 
-## 핵심 메시지
+## Key Takeaway
 
 Yocto에서 재현성은 source code만으로 끝나지 않는다. 어떤 layer를 켜고, 어떤 mirror와 cache를 쓰고, 어떤 buildhistory를 남기는지도 프로젝트의 일부다.
 
-## 확인 command
+## Verification Commands
 
 ```sh
 source envsetup.sh
-bitbake-getvar TEMPLATECONF
-sed -n '1,120p' build/conf/bblayers.conf
+echo "$TEMPLATECONF"
+sed -n '1,120p' conf/bblayers.conf
 ```

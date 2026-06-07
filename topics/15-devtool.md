@@ -1,191 +1,294 @@
-# 15. devtool 기반 recipe 개발
+# 15. devtool — kernel workflow 우선 설명
 
-[학습 순서로 돌아가기](../README.md#추천-학습-순서)
+[Back to Learning Path](../README.md#learning-path)
 
-관련 topic:
+이 문서는 `devtool`을 사용해 **kernel source(예: `linux-textbook`)를 workspace로 꺼내 수정하고**, 변경을 recipe에 반영하는 실무 중심 흐름을 먼저 설명한다. 단계별 command, generated artifact, 주의사항과 troubleshooting을 간결하게 정리한다. 기타 `devtool` 기능(새 recipe 추가, deploy 등)은 appendix처럼 뒤에 다룬다.
 
-- `meta-textbook-application`
-- `meta-textbook-external`
-- SDK workflow
+## What This Chapter Covers
 
-## 필요한 상황
+이 chapter는 source 수정과 recipe 반영을 하나의 workflow로 묶는 `devtool`의 역할을 설명한다. `devtool modify`로 source를 workspace에 꺼내고, commit을 기준으로 patch와 `.bbappend`를 생성해 layer에 남기는 과정을 `externalsrc`와 비교한다.
 
-새 software recipe를 빠르게 만들거나, 기존 recipe의 source를 workspace로 꺼내 수정하고, build/배포/patch 반영까지 한 workflow로 처리하고 싶다면 `devtool`을 사용한다.
+## 왜 devtool인가?
 
-## devtool을 언제 쓰나
+Yocto 개발에서는 단순히 source tree를 build하는 것과, 그 변경을 recipe/layer에 정식으로 반영하는 것이 분리되어 있다. kernel처럼 큰 source를 다룰 때는 다음 두 가지를 모두 만족해야 한다.
 
-`devtool`은 다음 상황에 잘 맞는다.
+| 목표 | 설명 |
+| --- | --- |
+| Yocto build가 source를 올바르게 사용 | recipe가 준비한 source/sysroot/build 환경에서 수정 사항 검증 |
+| 변경 내용을 layer에 기록 | patch, `.bbappend`, config fragment로 재현 가능한 artifact 생성 |
 
-- 새 application을 Yocto에 처음 넣을 때
-- 기존 recipe를 수정하고 patch를 만들 때
-- recipe build 결과를 QEMU나 target에 빠르게 배포해 볼 때
-- workspace에서 개발한 변경을 정식 layer로 반영할 때
+`devtool`은 이 두 가지를 함께 관리해 주는 tool이다. `devtool modify`로 workspace에 source를 꺼내고, `git commit`으로 change history를 만들고, `devtool update-recipe`나 `devtool finish`로 recipe에 반영하는 흐름이 명확하다.
 
-`externalsrc`와 비교:
+## externalsrc 대신 devtool을 쓰는 이유
 
-- `externalsrc`: 이미 프로젝트가 정한 외부 source tree를 Yocto build에 직접 연결한다.
-- `devtool`: 임시 workspace를 만들어 recipe 개발, patch 생성, 배포, 정식 반영을 도와준다.
+`externalsrc`는 이미 local에 존재하는 외부 source tree를 Yocto build에 곧바로 연결할 때 편리하다. 하지만 다음과 같은 경우에는 `devtool`이 더 적합하다.
 
-## 기본 준비
+- 최종적으로 변경 내용을 recipe에 반영해야 할 때
+- patch, `.bbappend`, Kconfig fragment 같은 recipe artifact를 자동으로 생성하고 싶을 때
+- Yocto build와 source change history를 함께 관리하며 반복적으로 테스트할 때
+
+`externalsrc`는 외부 source를 직접 사용하기 때문에 빠른 테스트에는 좋지만, 이 과정에서 일반 recipe의 `do_fetch` / `do_unpack` / `do_patch` 단계가 생략되는 점을 반드시 알아야 한다. 즉, Yocto가 `fetch`한 remote archive나 git source를 준비하는 대신, 이미 준비된 local source tree를 곧바로 build 입력으로 쓰게 된다.
+
+이로 인해 다음 항목이 생략되거나 수동화될 수 있다.
+
+| 항목 | `externalsrc`에서의 상태 |
+| --- | --- |
+| fetch/unpack/patch 기반 source 준비 | local tree를 직접 사용하므로 생략 |
+| workspace source 복사/관리 | 개발자가 직접 관리 |
+| `git commit` 기반 patch 생성 | 수동 처리 필요 |
+| `bbappend` / `devtool-fragment.cfg` 생성 | 자동 생성되지 않음 |
+| `devtool finish`/`devtool reset` 정리 | 별도 수동 작업 필요 |
+
+이 때문에 `externalsrc`를 쓰면 source 변경을 시험해볼 수는 있지만, 그 결과를 Yocto layer에 깔끔하게 기록하고 재현성을 유지하려면 별도의 수동 작업이 필요하다. 반면 `devtool`은 workspace source와 Yocto metadata를 함께 다루면서, 개발 결과물을 patch/recipe 형태로 정리할 수 있다.
+
+```mermaid
+flowchart TB
+    subgraph EXTERNALSRC["⚡ externalsrc: fast test"]
+        direction TB
+        SETUP_EXT["🔄 One-time setup"]
+        A["📁 local source tree"]
+        B["⚙️ set EXTERNALSRC"]
+        SETUP_EXT --> A --> B
+        
+        LOOP_EXT["🔁 build cycle"]
+        C["🔨 do_configure/compile"]
+        D["📦 package rootfs"]
+        LOOP_EXT --> C --> D
+        
+        REPEAT{❓ more tests?}
+        D --> REPEAT
+        REPEAT -->|yes| C
+        REPEAT -->|no| DONE_EXT["✅ done"]
+        
+        B --> LOOP_EXT
+    end
+
+    subgraph DEVTOOL["🧰 devtool: patch + layer management"]
+        direction TB
+        SETUP["🔄 One-time setup"]
+        E["📝 recipe remote source"]
+        F["⬇️ do_fetch/unpack/patch"]
+        G["💾 checkout workspace"]
+        SETUP --> E --> F --> G
+        
+        LOOP["🔁 dev cycle"]
+        H["✏️ modify + git commit"]
+        I["📋 update-recipe"]
+        J["🔨 configure/compile/test"]
+        LOOP --> H --> I --> J
+        
+        CONTINUE{❓ more changes?}
+        J --> CONTINUE
+        CONTINUE -->|yes| H
+        CONTINUE -->|no| FINISH
+        
+        FINISH["✅ finish"]
+        K["🏁 finish or reset"]
+        FINISH --> K
+        
+        G --> LOOP
+    end
+
+    style EXTERNALSRC fill:#1f2937,stroke:#0e7490,stroke-width:1px,color:#e5e7eb
+    style DEVTOOL fill:#1f2937,stroke:#0e7490,stroke-width:1px,color:#e5e7eb
+    style SETUP fill:#1f2937,stroke:#0e7490,stroke-width:1px,color:#e5e7eb
+    style SETUP_EXT fill:#1f2937,stroke:#0e7490,stroke-width:1px,color:#e5e7eb
+    style A fill:#1f2937,stroke:#0e7490,stroke-width:1px,color:#e5e7eb
+    style B fill:#1f2937,stroke:#0e7490,stroke-width:1px,color:#e5e7eb
+    style LOOP fill:#1f2937,stroke:#0e7490,stroke-width:1px,color:#e5e7eb
+    style LOOP_EXT fill:#1f2937,stroke:#0e7490,stroke-width:1px,color:#e5e7eb
+    style C fill:#1f2937,stroke:#0e7490,stroke-width:1px,color:#e5e7eb
+    style D fill:#1f2937,stroke:#0e7490,stroke-width:1px,color:#e5e7eb
+    style REPEAT fill:#fde68a,stroke:#b45309,stroke-width:2px,color:#111827
+    style DONE_EXT fill:#1f2937,stroke:#0e7490,stroke-width:1px,color:#e5e7eb
+    style FINISH fill:#1f2937,stroke:#0e7490,stroke-width:1px,color:#e5e7eb
+    style CONTINUE fill:#fde68a,stroke:#b45309,stroke-width:2px,color:#111827
+```
+
+**Workflow selection:**
+
+| 상황 | devtool | externalsrc |
+| --- | --- | --- |
+| 빠르게 source를 build하고 테스트만 하고 싶음 | 오버헤드 있음 | 추천 |
+| 변경을 최종적으로 layer에 반영하고 싶음 | 적합 | 별도 작업 필요 |
+| patch를 자동으로 생성하고 싶음 | 자동 생성 | 수동 작업 필요 |
+| 반복적으로 수정/테스트/반영하는 사이클 | 자동 정리 | 수동 정리 필요 |
+| 재현성 있게 release 준비 | 적합 | 주의 필요 |
+
+## Workflow Summary
+
+| 단계 | command/작업 | 결과 |
+| --- | --- | --- |
+| 1 | `devtool create-workspace` + `bitbake-layers add-layer` | workspace layer 생성 |
+| 2 | `devtool modify linux-textbook` | kernel source를 workspace로 checkout |
+| 3 | `devshell` → `menuconfig` → `savedefconfig` | kernel config 변경과 테스트 |
+| 4 | `git commit` | patch 생성 기준 commit 확보 |
+| 5 | `devtool update-recipe -a <layer> linux-textbook` | `.bbappend`, fragment, patch 생성 |
+| 6 | `bitbake linux-textbook -c compile` → `bitbake linux-textbook` | build 검증 |
+| 7 | `devtool finish` 또는 `devtool reset` | 정식 반영 또는 되돌리기 |
+
+아래에서 각 단계에 대한 구체 command와 generated files를 정리한다.
+
+## 1) 준비 및 workspace 생성
 
 ```sh
 source envsetup.sh
-devtool --help
-devtool status
+devtool create-workspace ../workspace
+bitbake-layers add-layer ../workspace
 ```
 
-`devtool`을 처음 쓰면 build directory 아래에 workspace layer가 생긴다.
+설명: `source envsetup.sh` 이후 현재 directory는 `build/`다. 위 command는 workspace root의 `workspace/` directory를 devtool workspace layer로 사용한다(`appends/`, `recipes/`, `sources/`). 한 번만 만들면 된다.
 
-```text
-build/workspace/
-  appends/
-  recipes/
-  sources/
-```
-
-이 workspace layer는 개발용이다. 최종 결과는 `devtool finish`로 프로젝트 layer에 반영한다.
-
-## 새 recipe 추가: devtool add
-
-이미 local source tree가 있는 경우:
-
-```sh
-source envsetup.sh
-devtool add my-hello external/hello-makefile-application
-devtool edit-recipe my-hello
-devtool build my-hello
-```
-
-remote source에서 시작하는 경우:
-
-```sh
-devtool add my-hello https://example.com/my-hello.tar.gz
-```
-
-별도 source directory로 checkout하고 싶다면:
-
-```sh
-devtool add my-hello /tmp/my-hello-src https://example.com/my-hello.git
-```
-
-## 기존 recipe 수정: devtool modify
-
-`hello-makefile-application`을 수정하고 싶다면:
-
-```sh
-source envsetup.sh
-devtool modify hello-makefile-application
-devtool status
-```
-
-source 위치는 보통 다음 경로에 생긴다.
-
-```text
-build/workspace/sources/hello-makefile-application
-```
-
-수정 후:
-
-```sh
-cd build/workspace/sources/hello-makefile-application
-git status
-git add .
-git commit -m "hello: update message"
-```
-
-## build와 image 반영
-
-recipe만 build:
-
-```sh
-devtool build hello-makefile-application
-```
-
-workspace package를 포함한 image build:
-
-```sh
-devtool build-image textbook-core-image
-```
-
-`devtool build`는 recipe의 sysroot populate까지 확인하는 빠른 개발 build에 가깝고, image에 넣어 확인하려면 `devtool build-image`를 쓴다.
-
-## target에 바로 배포
-
-QEMU나 보드에서 SSH가 켜져 있다면:
-
-```sh
-devtool deploy-target hello-makefile-application root@192.168.7.2
-```
-
-되돌리기:
-
-```sh
-devtool undeploy-target hello-makefile-application root@192.168.7.2
-```
-
-주의:
-
-- `deploy-target`은 package manager를 통해 설치하는 것이 아니라 install 결과물을 target에 복사한다.
-- runtime dependency를 자동으로 설치하지 않는다.
-- 이 프로젝트의 SDK layer가 `ssh-server-openssh`, `openssh-sftp-server`를 image에 넣는 이유가 이런 배포 workflow에도 도움이 된다.
-
-## 변경을 정식 layer에 반영
-
-수정한 source commit을 patch와 `.bbappend`로 남기고 싶다면:
-
-```sh
-devtool finish hello-makefile-application layers/meta-textbook/meta-textbook-application
-```
-
-또는 recipe 자체 업데이트만 하고 싶다면:
-
-```sh
-devtool update-recipe hello-makefile-application
-```
-
-작업을 버리고 workspace에서 제거:
-
-```sh
-devtool reset hello-makefile-application
-```
-
-## kernel에도 devtool을 쓸 수 있다
-
-kernel source를 devtool workspace로 꺼내 수정:
+## 2) kernel을 workspace로 꺼내기
 
 ```sh
 devtool modify linux-textbook
-```
-
-build:
-
-```sh
-devtool build linux-textbook
-devtool build-image textbook-core-image
-```
-
-정식 layer 반영:
-
-```sh
-devtool finish linux-textbook layers/meta-textbook/meta-textbook-core-bsp
-```
-
-주의:
-
-- kernel은 build 시간이 길고 source tree가 크다.
-- 이 프로젝트는 이미 `external/linux`와 `meta-textbook-external`의 `externalsrc` workflow를 제공하므로, kernel을 장기간 개발할 때는 `externalsrc`, patch 실험과 recipe 반영에는 `devtool`이 더 어울린다.
-
-## 핵심 메시지
-
-`devshell`은 recipe 안으로 들어가 보는 tool이고, `devtool`은 recipe 개발 과정을 관리하는 tool이다. `devtool add/modify`로 workspace를 만들고, `devtool build/deploy-target`으로 빠르게 확인하고, `devtool finish`로 정식 layer에 반영한다.
-
-## 확인 command
-
-```sh
-source envsetup.sh
 devtool status
-devtool modify hello-makefile-application
-devtool build hello-makefile-application
-devtool reset hello-makefile-application
 ```
 
+결과: workspace root 기준 `workspace/sources/linux-textbook`에 복사된 source tree가 생성된다. 이 복사본에서 수정 작업을 진행한다.
+
+## 3) devshell에서 구성 변경 및 테스트 build
+
+```sh
+bitbake linux-textbook -c devshell
+# devshell 내에서
+make menuconfig
+make savedefconfig
+```
+
+설명: `menuconfig`로 새로운 Kconfig 항목을 켜거나 변경한 뒤 `savedefconfig`로 저장한다. 모듈 추가/간단 드라이버 작성은 여기서 수행한다.
+
+## 4) 변경 사항 commit (중요)
+
+```sh
+cd ../workspace/sources/linux-textbook
+git add drivers/misc/Kconfig drivers/misc/Makefile drivers/misc/textbook_devtool_test.c
+git commit -m "misc: add textbook devtool test driver"
+```
+
+이유: `devtool update-recipe`는 workspace의 commit을 바탕으로 patch와 bbappend를 생성하므로, commit을 반드시 만들어야 한다.
+
+## 5) recipe 업데이트 및 patch 생성
+
+```sh
+devtool update-recipe -a ../layers/meta-textbook/meta-textbook-core-bsp linux-textbook
+```
+
+생성되는 예시 artifact:
+
+```text
+.
+└── layers
+    └── meta-textbook
+        └── meta-textbook-core-bsp
+            └── recipes-linux/linux
+                ├── linux-textbook.bbappend
+                └── linux-textbook
+                    ├── devtool-fragment.cfg
+                    └── 0001-misc-add-test-driver-for-devtool-modify-workflow-ver.patch
+```
+
+| artifact | Description |
+| --- | --- |
+| `linux-textbook.bbappend` | `SRC_URI`, `FILESEXTRAPATHS` 등 recipe 확장 |
+| `devtool-fragment.cfg` | `CONFIG_TEXTBOOK_DEVTOOL_TEST=y` 같은 Kconfig 변경 |
+| `0001-*.patch` | 실제 kernel source 변경 patch |
+
+설명: 위 file들을 검토해 `SRC_URI`와 patch 내용이 의도한 대로 되어있는지 확인한 후 layer에 commit한다.
+
+## 6) build 확인
+
+```sh
+bitbake linux-textbook -c compile
+bitbake linux-textbook
+```
+
+문제가 발생하면 관련 로그(예: `tmp/work/.../temp/log.do_packagedata.*`)를 확인한다.
+
+## 7) finish 또는 reset
+
+정식으로 layer에 반영하려면:
+
+```sh
+devtool finish linux-textbook ../layers/meta-textbook/meta-textbook-core-bsp
+```
+
+변경을 취소하고 workspace를 제거하려면:
+
+```sh
+devtool reset linux-textbook
+rm -rf ../workspace/sources/linux-textbook
+bitbake-layers remove-layer ../workspace
+```
+
+## generated files
+
+| 위치 | 내용 |
+| --- | --- |
+| `workspace/sources/linux-textbook/` | 수정한 kernel source |
+| `layers/.../linux-textbook.bbappend` | `FILESEXTRAPATHS` 및 `SRC_URI` 추가 |
+| `layers/.../devtool-fragment.cfg` | devtool로 만든 Kconfig fragment |
+| `layers/.../0001-*.patch` | source 변경 patch |
+
+## troubleshooting — common kernel devtool errors
+
+1) "The source tree is not clean, please run 'make mrproper'"
+
+  - 원인: devshell에서 생성된 build artifact나 변경이 source tree를 더럽혀 build가 실패.
+  - 해결:
+
+```sh
+cd ../workspace/sources/linux-textbook
+make mrproper
+git reset --hard HEAD   # 로컬 변경을 모두 되돌릴 때만 사용
+git clean -fdx
+```
+
+2) QA error: "Package version ... went backwards" (`version-going-backwards`)
+
+  - 원인: 이전 build에서 생성된 package 버전 표기가 현재보다 높아 Yocto QA에 걸림.
+  - 권장 해결:
+
+```sh
+cd build
+rm -rf tmp/work/textbook-oe-linux/linux-textbook/
+rm -rf sstate-cache/*linux-textbook*
+bitbake linux-textbook
+```
+
+  - 임시 우회(권장하지 않음):
+
+```sh
+echo 'ERROR_QA:remove = "version-going-backwards"' >> conf/local.conf
+```
+
+3) `pkgdata` error: "tar: ... pkgdata: Cannot open: No such file or directory"
+
+  - 원인: `do_package`/`do_packagedata` 단계의 중간 artifact 누락.
+  - 해결:
+
+```sh
+bitbake -c cleansstate linux-textbook
+bitbake linux-textbook
+```
+
+  - 필요시 `tmp/work/.../linux-textbook` directory를 삭제 후 재시도.
+
+## Appendix: 기타 devtool 기능
+
+| 기능 | command | 비고 |
+| --- | --- | --- |
+| 새 recipe 추가 | `devtool add <name> <source>` | local 또는 remote source |
+| recipe build | `devtool build <recipe>` | workspace recipe build |
+| image build | `devtool build-image <image>` | devtool workspace 반영 image build |
+| target deploy | `devtool deploy-target <recipe> <user@host>` | file copy 방식, dependency 설치 없음 |
+| reset work | `devtool reset <recipe>` | workspace recipe 연결 해제 |
+
+## checklist (kernel 수정 시)
+
+- [ ] `devtool modify` → `workspace/sources/<recipe>` 생성 확인
+- [ ] `devshell`에서 변경 후 반드시 `git commit` 수행
+- [ ] `devtool update-recipe -a <layer> <recipe>` 실행, 생성된 `.bbappend`와 patch 검토
+- [ ] `bitbake -c compile <recipe>`로 compile 확인
+- [ ] QA error(버전 등) 발생 시 `tmp/work`·`sstate-cache` 정리

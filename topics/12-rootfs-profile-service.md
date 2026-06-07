@@ -1,34 +1,45 @@
 # 12. Rootfs 서비스 확장
 
-[학습 순서로 돌아가기](../README.md#추천-학습-순서)
+[Back to Learning Path](../README.md#learning-path)
 
-관련 commit:
+Related Commit:
 
 - `a1f4e45 meta-textbook-rootfs: add new layer and textbook-profile-service`
 
-## 필요한 상황
+## When to Use
 
 image가 부팅된 뒤 특정 스크립트를 systemd 서비스로 실행하고, 결과 파일을 rootfs 안에 남기고 싶다면 rootfs 확장 layer와 systemd recipe를 추가한다.
 
-## 추가하면 되는 것
+## What This Chapter Covers
 
-- rootfs 전용 layer
-- systemd unit 파일
-- 실행 스크립트
-- `inherit systemd`
-- `SYSTEMD_SERVICE:${PN}`
-- `SYSTEMD_AUTO_ENABLE`
-- packagegroup `.bbappend`
+이 chapter는 boot 이후 target에서 실행되는 runtime feature를 image에 포함하는 방법을 설명한다. systemd unit과 script를 recipe로 설치하고, packagegroup을 통해 rootfs에 포함해 진단 결과를 남기는 흐름을 다룬다.
 
-## 이 프로젝트의 구현
+## Required Additions
 
-파일:
+| 항목 | 역할 |
+| --- | --- |
+| rootfs 전용 layer | runtime/rootfs 기능을 별도 layer로 분리 |
+| systemd unit 파일 | boot 후 실행할 service 정의 |
+| 실행 스크립트 | service가 호출할 실제 진단 logic |
+| `inherit systemd` | systemd package install/enable 처리 |
+| `SYSTEMD_SERVICE:${PN}` | package가 제공하는 unit 이름 지정 |
+| `SYSTEMD_AUTO_ENABLE` | boot 시 자동 enable 여부 지정 |
+| packagegroup `.bbappend` | image에 service package 포함 |
 
-- `meta-textbook-rootfs/conf/layer.conf`
-- `meta-textbook-rootfs/recipes-rootfs/systemd/textbook-profile-service.bb`
-- `meta-textbook-rootfs/recipes-rootfs/systemd/files/textbook-profile.service`
-- `meta-textbook-rootfs/recipes-rootfs/systemd/files/textbook-profile.sh`
-- `meta-textbook-rootfs/appends/packagegroups/packagegroup-textbook-core.bbappend`
+## Project Implementation
+
+```text
+.
+└── meta-textbook-rootfs
+    ├── conf/layer.conf
+    ├── recipes-rootfs
+    │   └── systemd
+    │       ├── textbook-profile-service.bb
+    │       └── files
+    │           ├── textbook-profile.service
+    │           └── textbook-profile.sh
+    └── appends/packagegroups/packagegroup-textbook-core.bbappend
+```
 
 recipe:
 
@@ -51,23 +62,30 @@ do_install() {
 서비스가 남기는 결과:
 
 ```text
-/var/log/textbook-profile/<timestamp>/summary.txt
-/var/log/textbook-profile/<timestamp>/blame.txt
-/var/log/textbook-profile/<timestamp>/critical-chain.txt
-/var/log/textbook-profile/<timestamp>/security.txt
-/var/log/textbook-profile/latest
+/var/log/textbook-profile
+├── latest -> <timestamp>/
+└── <timestamp>
+    ├── summary.txt
+    ├── blame.txt
+    ├── critical-chain.txt
+    └── security.txt
 ```
 
-## 핵심 메시지
+## Key Takeaway
 
 Rootfs 확장은 단순히 package를 더 넣는 것뿐 아니라, target이 부팅 후 스스로 진단 정보를 남기게 만드는 방식까지 포함한다. systemd recipe는 이런 운영 feature를 image에 녹이는 좋은 예제다.
 
-## 확인 command
+## Verification Commands
 
 ```sh
-grep textbook-profile build/buildhistory/images/textbook/glibc/textbook-core-image/installed-package-names.txt
-runqemu textbook-core-image nographic
+grep textbook-profile buildhistory/images/textbook/glibc/textbook-core-image/installed-package-names.txt
+bitbake linux-textbook -c deploy
+runqemu textbook-core-image nographic slirp
+```
+
+QEMU login 이후 target 안에서 확인:
+
+```sh
 systemctl status textbook-profile.service
 ls -l /var/log/textbook-profile/latest
 ```
-

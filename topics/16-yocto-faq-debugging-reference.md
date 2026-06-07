@@ -1,37 +1,68 @@
 # 16. Yocto 사용 FAQ와 debugging reference
 
-[학습 순서로 돌아가기](../README.md#추천-학습-순서)
+[Back to Learning Path](../README.md#learning-path)
 
-## 이런 설명이 필요하다면
+## FAQ Index
 
 Yocto를 실제로 사용하다 보면 다음 질문이 바로 생긴다.
 
-- 대표적인 기본 variable은 무엇인가
-- error가 발생하면 어디부터 봐야 하는가
-- buildhistory는 무엇이고 어디에 남는가
-- layer는 어떻게 추가/제거하는가
-- variable과 recipe의 최종 형태는 어떻게 확인하는가
-- `.bbappend`가 적용됐는지, 어떤 recipe가 선택됐는지 어떻게 보는가
+| 질문 | 이 장의 위치 |
+| --- | --- |
+| 대표적인 기본 variable은 무엇인가 | `Common Variables` |
+| error가 발생하면 어디부터 봐야 하는가 | `error가 발생했을 때 기본 루틴` |
+| buildhistory는 무엇이고 어디에 남는가 | `buildhistory란 무엇인가` |
+| layer는 어떻게 추가/제거하는가 | `Layer 추가와 제거` |
+| variable과 recipe의 최종 형태는 어떻게 확인하는가 | `variable 최종값 확인`, `Recipe 최종 형태 확인` |
+| `.bbappend`가 적용됐는지, 어떤 recipe가 선택됐는가 | `Recipe 최종 형태 확인` |
 
 이 장은 후반부의 “실전 운영 레퍼런스”로 사용한다.
 
+## What This Chapter Covers
+
+이 chapter는 Yocto build가 실패했을 때 어디서부터 확인해야 하는지 순서를 잡아준다. recipe/task 이름, `log.do_*`, `run.do_*`, final variable, `.bbappend` 적용 여부, buildhistory를 차례로 확인해 감으로 수정하지 않고 현재 metadata 상태를 기준으로 debugging하는 방법을 정리한다.
+
 ```mermaid
 flowchart TB
-    Error["BitBake ERROR"] --> Identify["recipe + task 확인"]
-    Identify --> Logs["log.do_<task> 읽기"]
-    Logs --> Vars["bitbake-getvar / bitbake -e<br/>최종 variable 확인"]
-    Vars --> Appends["bitbake-layers show-appends<br/>layer 적용 확인"]
-    Appends --> ReRun["bitbake <recipe> -c <task> -f"]
-    ReRun --> Shell["필요하면 devshell에서 재현"]
-    Shell --> Fix["recipe/layer 수정"]
-    Fix --> History["buildhistory로 결과 변화 확인"]
+    Error["❌ BitBake ERROR"] --> Identify["🔍 Step 1: identify recipe"]
+    Identify --> Logs["📄 Step 2: read log.do_task"]
+    Logs --> Vars["⚙️ Step 3: check variables"]
+    Vars --> Appends["📋 Step 4: check layer appends"]
+    Appends --> ReRun["🔄 Step 5: bitbake -c task -f"]
+    ReRun --> Shell["💻 Step 6: devshell debug"]
+    Shell --> Fix["✏️ Step 7: fix recipe/layer"]
+    Fix --> History["📊 Step 8: verify buildhistory"]
+    
+    History --> Success{❓ fixed?}
+    Success -->|yes| Done["✅ done"]
+    Success -->|no| Identify
+
+    style Error fill:#1f2937,stroke:#0e7490,stroke-width:1px,color:#e5e7eb
+    style Identify fill:#1f2937,stroke:#0e7490,stroke-width:1px,color:#e5e7eb
+    style Logs fill:#1f2937,stroke:#0e7490,stroke-width:1px,color:#e5e7eb
+    style Vars fill:#1f2937,stroke:#0e7490,stroke-width:1px,color:#e5e7eb
+    style Appends fill:#1f2937,stroke:#0e7490,stroke-width:1px,color:#e5e7eb
+    style ReRun fill:#1f2937,stroke:#0e7490,stroke-width:1px,color:#e5e7eb
+    style Shell fill:#1f2937,stroke:#0e7490,stroke-width:1px,color:#e5e7eb
+    style Fix fill:#1f2937,stroke:#0e7490,stroke-width:1px,color:#e5e7eb
+    style History fill:#1f2937,stroke:#0e7490,stroke-width:1px,color:#e5e7eb
+    style Success fill:#fde68a,stroke:#b45309,stroke-width:2px,color:#111827
+    style Done fill:#1f2937,stroke:#0e7490,stroke-width:1px,color:#e5e7eb
 ```
 
-## 대표 기본 variable
+**Debug process:**
+
+| Debug Phase | 범위 | 목적 |
+| --- | --- | --- |
+| Gather info | Step 1-4 | recipe/task, log, variable, append 적용 여부로 원인 후보 좁히기 |
+| Reproduce & fix | Step 5-7 | task 재실행, devshell 재현, recipe/layer 수정 |
+| Verify | Step 8 | buildhistory로 image/package 변화 확인 |
+| Iterate | fixed? no | 해결되지 않으면 Step 1로 돌아가 다시 좁히기 |
+
+## Common Variables
 
 ### Build/workspace variable
 
-| variable | 의미 | 예시/비고 |
+| variable | Description | 예시/비고 |
 | --- | --- | --- |
 | `TOPDIR` | 현재 build directory | 보통 `build` |
 | `COREBASE` | Poky/OE-Core 기준 경로 | 이 프로젝트에서는 `poky` |
@@ -51,9 +82,9 @@ bitbake-getvar TMPDIR
 bitbake-getvar DEPLOY_DIR_IMAGE
 ```
 
-### Recipe 작업 경로 variable
+### Recipe Work Directory Variables
 
-| variable | 의미 |
+| variable | Description |
 | --- | --- |
 | `WORKDIR` | recipe 하나의 workspace |
 | `S` | source directory |
@@ -72,7 +103,7 @@ bitbake-getvar -r hello-makefile-application D
 
 ### Recipe metadata variable
 
-| variable | 의미 |
+| variable | Description |
 | --- | --- |
 | `PN` | package/recipe base name |
 | `PV` | version |
@@ -97,7 +128,7 @@ bitbake-getvar -r linux-textbook FILESPATH
 
 ### Dependency variable
 
-| variable | 의미 |
+| variable | Description |
 | --- | --- |
 | `DEPENDS` | build-time dependency |
 | `RDEPENDS:${PN}` | runtime dependency |
@@ -116,7 +147,7 @@ PREFERRED_PROVIDER_virtual/kernel = "linux-textbook"
 
 ### Machine/distro/image variable
 
-| variable | 의미 |
+| variable | Description |
 | --- | --- |
 | `MACHINE` | target machine |
 | `MACHINE_FEATURES` | machine capability |
@@ -140,7 +171,7 @@ bitbake-getvar -r textbook-core-image IMAGE_FSTYPES
 
 ### Layer variable
 
-| variable | 의미 |
+| variable | Description |
 | --- | --- |
 | `BBLAYERS` | 활성화된 layer 목록 |
 | `BBPATH` | conf/class 검색 경로 |
@@ -185,8 +216,10 @@ bitbake -e packagegroup-textbook-core | grep '^RDEPENDS'
 
 주의:
 
-- `bitbake -e` 출력은 매우 크다.
-- 단일 variable 확인은 `bitbake-getvar`, 전체 분석은 `bitbake -e`가 편하다.
+| tool | 적합한 상황 | 주의점 |
+| --- | --- | --- |
+| `bitbake-getvar` | 단일 variable 값을 빠르게 확인 | recipe별 값은 `-r <recipe>` 사용 |
+| `bitbake -e` | 전체 metadata와 task function 분석 | 출력이 매우 크므로 grep/file redirect 권장 |
 
 ## Recipe 최종 형태 확인
 
@@ -258,19 +291,31 @@ add_external_sources
 remove_external_sources
 ```
 
+`remove_external_sources`는 `${TOPDIR}/conf/bblayers.conf`에서 external layer를 제거한다. `.repo/local_manifests/external.xml`과 `external/` checkout은 삭제하지 않는다.
+
 직접 파일로 확인:
 
 ```sh
-sed -n '1,160p' build/conf/bblayers.conf
+sed -n '1,160p' conf/bblayers.conf
 ```
 
 주의:
 
-- `bitbake-layers add-layer`는 `build/conf/bblayers.conf`의 `BBLAYERS`를 수정한다.
-- `TEMPLATECONF`는 새 build directory를 만들 때 sample을 제공한다. 이미 만들어진 `build/conf/bblayers.conf`는 별도로 수정해야 한다.
-- layer를 추가했는데 recipe가 안 보이면 `conf/layer.conf`, `BBFILES`, `LAYERSERIES_COMPAT`를 확인한다.
+| 주의점 | 설명 |
+| --- | --- |
+| `add-layer`는 `BBLAYERS` 수정 | `${TOPDIR}/conf/bblayers.conf`가 직접 바뀐다. |
+| `TEMPLATECONF`는 새 build directory용 | 이미 만들어진 `${TOPDIR}/conf/bblayers.conf`는 별도로 수정해야 한다. |
+| recipe가 안 보일 때 | `conf/layer.conf`, `BBFILES`, `LAYERSERIES_COMPAT`를 확인한다. |
 
 ## error가 발생했을 때 기본 루틴
+
+| 순서 | 확인할 것 | 대표 command/위치 |
+| --- | --- | --- |
+| 1 | 실패한 recipe와 task 이름 | `ERROR: <recipe> ... do_<task>` |
+| 2 | task log | `${WORKDIR}/temp/log.do_<task>` |
+| 3 | 실제 실행 script | `${WORKDIR}/temp/run.do_<task>*` |
+| 4 | 해당 task 강제 재실행 | `bitbake <recipe> -c <task> -f` |
+| 5 | 같은 환경에서 수동 재현 | `bitbake <recipe> -c devshell` |
 
 1. 실패한 task 이름을 확인한다.
 
@@ -292,7 +337,7 @@ ls $(bitbake-getvar -r hello-makefile-application --value T)
 직접 찾기:
 
 ```sh
-find build/tmp/work -path '*hello-makefile-application*' -path '*temp/log.do_compile*'
+find tmp/work -path '*hello-makefile-application*' -path '*temp/log.do_compile*'
 ```
 
 대표 로그:
@@ -353,28 +398,18 @@ oe_runmake -C ${S} O=${B}
 
 ## clean 계열 command
 
-recipe 작업 결과만 지우기:
-
-```sh
-bitbake hello-makefile-application -c clean
-```
-
-sstate까지 지우고 다시 build하게 하기:
-
-```sh
-bitbake hello-makefile-application -c cleansstate
-```
-
-download까지 지우기:
-
-```sh
-bitbake hello-makefile-application -c cleanall
-```
+| command | 지우는 범위 | 사용 상황 |
+| --- | --- | --- |
+| `bitbake hello-makefile-application -c clean` | recipe work output | compile/install/package artifact를 다시 만들고 싶을 때 |
+| `bitbake hello-makefile-application -c cleansstate` | recipe work output + sstate | cache 영향 없이 다시 build하고 싶을 때 |
+| `bitbake hello-makefile-application -c cleanall` | work output + sstate + download | fetch/source 문제까지 다시 확인할 때 |
 
 주의:
 
-- `cleanall`은 source download까지 지운다.
-- fetch 문제가 아니라면 보통 `clean` 또는 `cleansstate`로 충분하다.
+| 주의점 | 설명 |
+| --- | --- |
+| `cleanall`은 source download까지 삭제 | mirror/download 재사용도 사라진다. |
+| 일반적인 rebuild에는 과할 수 있음 | fetch 문제가 아니라면 보통 `clean` 또는 `cleansstate`로 충분하다. |
 
 ## buildhistory란 무엇인가
 
@@ -392,38 +427,44 @@ BUILDHISTORY_IMAGE_FILES = "/etc/passwd /etc/group"
 
 남는 정보:
 
-- image에 설치된 package 목록
-- package version과 size
-- image info
-- dependency graph
-- 특정 image file 내용
-- metadata revision
+| 기록 | 확인 목적 |
+| --- | --- |
+| image에 설치된 package 목록 | package 추가/삭제 확인 |
+| package version과 size | version 변경, size 증가 추적 |
+| image info | image 설정과 build 결과 확인 |
+| dependency graph | package dependency 변화 확인 |
+| 특정 image file 내용 | `/etc/passwd`, `/etc/group` 같은 감시 대상 확인 |
+| metadata revision | build에 사용된 layer commit 추적 |
 
 이 프로젝트에서 확인한 파일:
 
 ```text
-build/buildhistory/images/textbook/glibc/textbook-core-image/image-info.txt
-build/buildhistory/images/textbook/glibc/textbook-core-image/installed-package-names.txt
-build/buildhistory/images/textbook/glibc/textbook-core-image/files-in-image.txt
-build/buildhistory/metadata-revs
+.
+└── build
+    └── buildhistory
+        ├── metadata-revs
+        └── images/textbook/glibc/textbook-core-image
+            ├── image-info.txt
+            ├── installed-package-names.txt
+            └── files-in-image.txt
 ```
 
 확인:
 
 ```sh
-git -C build/buildhistory log --oneline -n 10
-sed -n '1,120p' build/buildhistory/images/textbook/glibc/textbook-core-image/image-info.txt
-grep hello build/buildhistory/images/textbook/glibc/textbook-core-image/installed-package-names.txt
+git -C buildhistory log --oneline -n 10
+sed -n '1,120p' buildhistory/images/textbook/glibc/textbook-core-image/image-info.txt
+grep hello buildhistory/images/textbook/glibc/textbook-core-image/installed-package-names.txt
 ```
 
 build 간 차이 확인:
 
 ```sh
-git -C build/buildhistory diff HEAD~1 HEAD
-buildhistory-diff build/buildhistory
+git -C buildhistory diff HEAD~1 HEAD
+buildhistory-diff buildhistory
 ```
 
-핵심 메시지:
+Key Takeaway:
 
 buildhistory는 “image에 무엇이 들어갔는지”와 “지난 build 이후 무엇이 바뀌었는지”를 추적하는 기록이다. 제품 개발에서는 image 크기 증가, package 추가/삭제, version 변경을 확인하는 데 중요하다.
 
@@ -467,7 +508,7 @@ oe-pkgdata-util find-path /usr/bin/hello-makefile-application
 image에 실제로 들어갔는지:
 
 ```sh
-grep hello-makefile-application build/buildhistory/images/textbook/glibc/textbook-core-image/installed-package-names.txt
+grep hello-makefile-application buildhistory/images/textbook/glibc/textbook-core-image/installed-package-names.txt
 ```
 
 ## provider 문제 확인
@@ -512,7 +553,7 @@ bitbake-getvar -r packagegroup-textbook-core RDEPENDS
 bitbake textbook-core-image -g
 ```
 
-생성 파일:
+generated files:
 
 ```text
 pn-buildlist
@@ -524,17 +565,17 @@ task-depends.dot
 
 ## 실전 debugging 순서 요약
 
-```text
-1. ERROR에서 recipe와 task 이름을 확인한다.
-2. ${WORKDIR}/temp/log.do_<task>를 읽는다.
-3. bitbake-getvar -r <recipe>로 S/B/D/WORKDIR/SRC_URI/DEPENDS를 확인한다.
-4. bitbake-layers show-appends로 .bbappend 적용 여부를 확인한다.
-5. 필요한 task만 -f로 재실행한다.
-6. devshell에서 같은 환경으로 수동 재현한다.
-7. 수정이 맞으면 recipe/layer metadata에 반영한다.
-8. buildhistory로 image/package 변화가 의도한 것인지 확인한다.
-```
+| 순서 | 작업 | 목적 |
+| --- | --- | --- |
+| 1 | ERROR에서 recipe와 task 이름 확인 | 실패 지점 특정 |
+| 2 | `${WORKDIR}/temp/log.do_<task>` 읽기 | 직접 원인 확인 |
+| 3 | `bitbake-getvar -r <recipe>`로 `S/B/D/WORKDIR/SRC_URI/DEPENDS` 확인 | metadata 최종값 검증 |
+| 4 | `bitbake-layers show-appends` 확인 | `.bbappend` 적용 여부 확인 |
+| 5 | 필요한 task만 `-f`로 재실행 | 빠른 재현 |
+| 6 | devshell에서 수동 재현 | 같은 build 환경에서 원인 좁히기 |
+| 7 | recipe/layer metadata에 반영 | 재현 가능한 수정으로 고정 |
+| 8 | buildhistory 확인 | image/package 변화 검증 |
 
-## 핵심 메시지
+## Key Takeaway
 
 Yocto debugging의 핵심은 “최종 metadata를 확인하고, 실패한 task의 log/run script를 읽고, 필요하면 같은 환경에 들어가 재현하는 것”이다. 감으로 고치기보다 `bitbake-getvar`, `bitbake -e`, `bitbake-layers`, `buildhistory`를 사용해 현재 build 시스템이 무엇을 보고 있는지 먼저 확인한다.
